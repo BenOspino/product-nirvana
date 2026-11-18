@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Your Product Practice May Need an Overhaul</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  background: #08121A;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+canvas { display: block; }
+#hint {
+  position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+  color: rgba(255,255,255,0.28);
+  font: 500 11px/1 'Space Grotesk', sans-serif;
+  letter-spacing: .12em; pointer-events: none; white-space: nowrap;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">← → NAVIGATE &nbsp;·&nbsp; F FULLSCREEN &nbsp;·&nbsp; R RESTART</div>
+<script>
+// ── Canvas ────────────────────────────────────────────────────────────
+const W = 1920, H = 1080;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+function resize() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width  = (W * s) + 'px';
+  cv.style.height = (H * s) + 'px';
+  cv.width  = W;
+  cv.height = H;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── Palette ───────────────────────────────────────────────────────────
+const NAVY  = '#053057';
+const TEAL  = '#00EDED';
+const OFF   = '#F4F3F0';
+const WHITE = '#FFFFFF';
+const INK   = '#14212E';
+const GRAY  = '#4A5565';
+const MUTED = '#6B7480';
+const LIGHT = '#BFCAD6';
+const RUST  = '#A85A1E';
+const AMBER = '#E39B56';
+const SAND  = '#E2DCD1';
+
+function rgba(hex, a) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// ── Easing ────────────────────────────────────────────────────────────
+const clamp = (x, a=0, b=1) => Math.min(b, Math.max(a, x));
+const prog  = (t, a, b) => clamp((t - a) / (b - a));
+const ease  = x => x < .5 ? 4*x*x*x : 1 - Math.pow(-2*x+2,3)/2;
+const easeO = x => 1 - Math.pow(1 - x, 3);
+
+// Returns {a, dy} for a fade-up-enter animation
+function fu(t, start, dur = 0.55) {
+  const p = ease(prog(t, start, start + dur));
+  return { a: p, dy: 30 * (1 - p) };
+}
+
+// ── Drawing helpers ───────────────────────────────────────────────────
+function setFont(size, weight = 400) {
+  ctx.font = `${weight} ${size}px 'Space Grotesk', sans-serif`;
+}
+
+function fillText(str, x, y, color, size, weight = 400, align = 'left', baseline = 'top') {
+  ctx.save();
+  setFont(size, weight);
+  ctx.fillStyle   = color;
+  ctx.textAlign   = align;
+  ctx.textBaseline = baseline;
+  ctx.fillText(str, x, y);
+  ctx.restore();
+}
+
+function fillRect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+// Word-wrap: returns array of lines
+function wrap(text, maxW, size, weight = 400) {
+  ctx.save();
+  setFont(size, weight);
+  const words = text.split(' ');
+  const lines = [];
+  let line = '';
+  for (const w of words) {
+    const test = line + (line ? ' ' : '') + w;
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line); line = w;
+    } else { line = test; }
+  }
+  if (line) lines.push(line);
+  ctx.restore();
+  return lines;
+}
+
+function fillWrapped(text, x, y, maxW, lineH, color, size, weight = 400) {
+  const lines = wrap(text, maxW, size, weight);
+  ctx.save();
+  setFont(size, weight);
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  lines.forEach((l, i) => ctx.fillText(l, x, y + i * lineH));
+  ctx.restore();
+  return lines.length * lineH;
+}
+
+// Eyebrow label (all-caps, spaced)
+function eyebrow(label, x, y, color, alpha_v = 1) {
+  ctx.save();
+  ctx.globalAlpha = alpha_v;
+  setFont(13, 600);
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  // Manual letter spacing by drawing chars
+  let cx = x;
+  for (const ch of label.toUpperCase()) {
+    ctx.fillText(ch, cx, y);
+    cx += ctx.measureText(ch).width + 1.8;
+  }
+  ctx.restore();
+}
+
+// Blend logo (top-right)
+function logo(dark = true) {
+  fillText('blend™', W - 92, 38, dark ? TEAL : NAVY, 20, 700, 'right', 'top');
+}
+
+// Progress dots (bottom center)
+function navDots(current, total, dark = true) {
+  const r = 4, gap = 16;
+  const totalW = (total - 1) * gap;
+  const sx = (W - totalW) / 2;
+  for (let i = 0; i < total; i++) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(sx + i * gap, H - 28, r, 0, Math.PI * 2);
+    if (i === current) {
+      ctx.fillStyle = dark ? TEAL : NAVY;
+    } else {
+      ctx.fillStyle = dark ? rgba(TEAL, 0.2) : rgba(NAVY, 0.18);
+    }
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// Animated entry helper — wraps any drawing call with fade + translateY
+function enter(a, dy, drawFn) {
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.translate(0, dy);
+  drawFn();
+  ctx.restore();
+}
+
+// ── Scene 0 — Cover ───────────────────────────────────────────────────
+function scCover(t) {
+  fillRect(0, 0, W, H, NAVY);
+
+  // Animated teal accent bar
+  const lp = ease(prog(t, 0.0, 0.5));
+  fillRect(100, H / 2 - 60, 300 * lp, 4, TEAL);
+
+  // Headline line 1
+  const f1 = fu(t, 0.3);
+  enter(f1.a, f1.dy, () => {
+    setFont(100, 700); ctx.fillStyle = WHITE;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Your product practice', 100, H / 2 - 160);
+  });
+
+  // Headline line 2 (teal)
+  const f2 = fu(t, 0.55);
+  enter(f2.a, f2.dy, () => {
+    setFont(100, 700); ctx.fillStyle = TEAL;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('may need an overhaul.', 100, H / 2 - 42);
+  });
+
+  // Subtitle
+  const f3 = fu(t, 0.95);
+  enter(f3.a, f3.dy, () => {
+    setFont(26, 400); ctx.fillStyle = LIGHT;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Transform your product teams with a maturity framework', 100, H / 2 + 100);
+  });
+
+  logo(true);
+  navDots(0, SCENES.length, true);
+}
+
+// ── Scene 1 — Qualifiers ──────────────────────────────────────────────
+function scQualifiers(t) {
+  fillRect(0, 0, W, H, OFF);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('QUALIFIERS', 100, 80, RUST));
+
+  const fh = fu(t, 0.2, 0.5);
+  enter(fh.a, fh.dy, () => {
+    setFont(52, 700); ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('This applies to your team if…', 100, 148);
+  });
+
+  const items = [
+    'A planning and development process is already in place',
+    'A dedicated team manages these processes effectively',
+    'Launching and managing products is vital for your company\'s growth',
+  ];
+  items.forEach((item, i) => {
+    const f = fu(t, 0.4 + i * 0.2, 0.5);
+    enter(f.a, f.dy, () => {
+      const y = 300 + i * 170;
+      // Top rule
+      fillRect(100, y - 2, 1400, 1, rgba(GRAY, 0.15));
+      // Number
+      setFont(60, 700); ctx.fillStyle = rgba(TEAL, 0.4);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(String(i + 1), 100, y + 10);
+      // Text
+      setFont(30, 400); ctx.fillStyle = GRAY;
+      ctx.fillText(item, 220, y + 20);
+    });
+  });
+
+  logo(false);
+  navDots(1, SCENES.length, false);
+}
+
+// ── Scene 2 — The Three Traps ─────────────────────────────────────────
+function scTraps(t) {
+  fillRect(0, 0, W, H, OFF);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('THE PATTERNS', 100, 80, RUST));
+
+  const fh = fu(t, 0.2, 0.5);
+  enter(fh.a, fh.dy, () => {
+    setFont(50, 700); ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Three traps holding product teams back', 100, 148);
+  });
+
+  const traps = [
+    { title: 'The Project\nManager\'s Trap', body: 'Unempowered by the belief that they don\'t make decisions—only manage timelines.', color: RUST },
+    { title: 'The\nBuild Trap', body: 'Hustling hard but still falling short on delivering real value to customers.', color: AMBER },
+    { title: 'The Customer-\nCentric Fail', body: 'Missing the mark on solving real problems for users and customers.', color: TEAL },
+  ];
+  const cW = 520, cH = 410, gap = 55;
+  const sx = (W - (cW * 3 + gap * 2)) / 2;
+
+  traps.forEach((trap, i) => {
+    const f = fu(t, 0.4 + i * 0.15, 0.5);
+    enter(f.a, f.dy, () => {
+      const cx = sx + i * (cW + gap);
+      fillRect(cx, 278, cW, cH, NAVY);
+      fillRect(cx, 278, cW, 6, trap.color);
+      // Ghost number
+      ctx.save(); ctx.globalAlpha = 0.12;
+      setFont(80, 700); ctx.fillStyle = trap.color;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(String(i + 1).padStart(2, '0'), cx + 24, 288);
+      ctx.restore();
+      // Title
+      const lines = trap.title.split('\n');
+      setFont(34, 700); ctx.fillStyle = WHITE;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      lines.forEach((l, li) => ctx.fillText(l, cx + 28, 374 + li * 44));
+      // Body
+      fillWrapped(trap.body, cx + 28, 490, cW - 56, 30, LIGHT, 20, 400);
+    });
+  });
+
+  logo(false);
+  navDots(2, SCENES.length, false);
+}
+
+// ── Scene 3 — The Challenge ───────────────────────────────────────────
+function scChallenge(t) {
+  fillRect(0, 0, W, H, NAVY);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('THE FUNDAMENTAL CHALLENGE', W / 2 - 160, 80, TEAL));
+
+  const f1 = fu(t, 0.3, 0.5);
+  enter(f1.a, f1.dy, () => {
+    setFont(80, 700); ctx.fillStyle = WHITE;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('These patterns are', W / 2, 340);
+  });
+
+  const f2 = fu(t, 0.55, 0.5);
+  enter(f2.a, f2.dy, () => {
+    setFont(80, 700); ctx.fillStyle = TEAL;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('manifestations of a', W / 2, 436);
+  });
+
+  const f3 = fu(t, 0.75, 0.5);
+  enter(f3.a, f3.dy, () => {
+    setFont(80, 700); ctx.fillStyle = WHITE;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('fundamental challenge.', W / 2, 532);
+  });
+
+  logo(true);
+  navDots(3, SCENES.length, true);
+}
+
+// ── Scene 4 — The Solution ────────────────────────────────────────────
+function scSolution(t) {
+  fillRect(0, 0, W, H, OFF);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('THE FIX', 100, 80, RUST));
+
+  const lines = [
+    { text: 'You need a cohesive', color: INK, delay: 0.3 },
+    { text: 'operational model', color: TEAL, delay: 0.52 },
+    { text: 'that elevates ownership and accountability.', color: INK, delay: 0.72 },
+  ];
+  lines.forEach((l, i) => {
+    const f = fu(t, l.delay, 0.5);
+    enter(f.a, f.dy, () => {
+      setFont(66, 700); ctx.fillStyle = l.color;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(l.text, 100, 160 + i * 88);
+    });
+  });
+
+  const f4 = fu(t, 1.05, 0.5);
+  enter(f4.a, f4.dy, () => {
+    fillRect(100, 448, 1400, 1, rgba(GRAY, 0.2));
+    setFont(22, 400); ctx.fillStyle = MUTED;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Inspired by Donella Meadows\' Thinking in Systems: purpose, elements, and interconnections.', 100, 468);
+  });
+
+  logo(false);
+  navDots(4, SCENES.length, false);
+}
+
+// ── Scene 5 — Systems Thinking ────────────────────────────────────────
+function scSystems(t) {
+  fillRect(0, 0, W, H, OFF);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('SYSTEMS THINKING', 100, 80, RUST));
+
+  const fh = fu(t, 0.2, 0.5);
+  enter(fh.a, fh.dy, () => {
+    setFont(50, 700); ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('All product practices operate as systems.', 100, 148);
+  });
+
+  const components = [
+    { num: '1', title: 'Elements', sub: 'Visible Stuff', items: ['Teams', 'Documents & Ceremonies', 'Knowledge & Technologies', 'Customers'], color: TEAL },
+    { num: '2', title: 'Interconnections', sub: '"Rules of the Game"', items: ['Governing & Triggers', 'Decision Making', 'Resourcing & Coordination', 'Feedback Loops'], color: RUST },
+    { num: '3', title: 'Purpose', sub: 'Behavior', items: ['Outcomes over time', 'Organizational patterns', 'What the system is built to do'], color: AMBER },
+  ];
+  const cW = 500, cH = 400, gap = 60;
+  const sx = (W - (cW * 3 + gap * 2)) / 2;
+
+  components.forEach((comp, i) => {
+    const f = fu(t, 0.4 + i * 0.15, 0.5);
+    enter(f.a, f.dy, () => {
+      const cx = sx + i * (cW + gap);
+      fillRect(cx, 282, cW, cH, rgba(NAVY, 0.06));
+      fillRect(cx, 282, cW, 5, comp.color);
+      setFont(13, 600); ctx.fillStyle = comp.color;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(comp.num, cx + 26, 306);
+      setFont(36, 700); ctx.fillStyle = INK;
+      ctx.fillText(comp.title, cx + 26, 334);
+      setFont(18, 400); ctx.fillStyle = MUTED;
+      ctx.fillText(comp.sub, cx + 26, 384);
+      fillRect(cx + 26, 416, cW - 52, 1, rgba(GRAY, 0.15));
+      comp.items.forEach((item, ii) => {
+        setFont(17, 400); ctx.fillStyle = GRAY;
+        ctx.fillText('· ' + item, cx + 26, 432 + ii * 30);
+      });
+    });
+  });
+
+  logo(false);
+  navDots(5, SCENES.length, false);
+}
+
+// ── Scene 6 — Principles (dark) ───────────────────────────────────────
+function scPrinciples(t) {
+  fillRect(0, 0, W, H, NAVY);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('TWO PRINCIPLES', W / 2 - 90, 80, TEAL));
+
+  const fh = fu(t, 0.2, 0.5);
+  enter(fh.a, fh.dy, () => {
+    setFont(42, 700); ctx.fillStyle = WHITE;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('When product development is designed as a system, it delivers.', W / 2, 160);
+  });
+
+  const principles = [
+    { tag: 'RESILIENCE', title: 'The Resilience Principle', body: 'When product development is organized as a cohesive system, it enables self-repair mechanisms that sustain performance under stress.', accent: TEAL },
+    { tag: 'PURPOSE', title: 'The Purpose Principle', body: 'When this system is designed with a singular purpose, it ensures consistent outcomes and prevents the drift that causes the three traps.', accent: AMBER },
+  ];
+  const pW = 740, pH = 320, gap = 80;
+  const sx = (W - (pW * 2 + gap)) / 2;
+
+  principles.forEach((p, i) => {
+    const f = fu(t, 0.35 + i * 0.2, 0.5);
+    enter(f.a, f.dy, () => {
+      const px = sx + i * (pW + gap);
+      fillRect(px, 268, pW, pH, rgba(WHITE, 0.05));
+      fillRect(px, 268, pW, 4, p.accent);
+      eyebrow(p.tag, px + 28, 290, p.accent);
+      setFont(34, 700); ctx.fillStyle = WHITE;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(p.title, px + 28, 326);
+      fillWrapped(p.body, px + 28, 384, pW - 56, 30, LIGHT, 20, 400);
+    });
+  });
+
+  logo(true);
+  navDots(6, SCENES.length, true);
+}
+
+// ── Scene 7 — Maturity Levels ─────────────────────────────────────────
+function scMaturity(t) {
+  fillRect(0, 0, W, H, OFF);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('MATURITY FRAMEWORK', 100, 80, RUST));
+
+  const fh = fu(t, 0.2, 0.5);
+  enter(fh.a, fh.dy, () => {
+    setFont(50, 700); ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Three stages of product organization maturity', 100, 148);
+  });
+
+  const levels = [
+    { label: 'LEVEL 01', title: 'Delivery\nOrganization', desc: 'Executes deliverables accepted by stakeholders. Focuses on timeline management, agile delivery, and stakeholder engagement.', color: RUST, x: 90 },
+    { label: 'LEVEL 02', title: 'Product-Led\nDelivery Org', desc: 'Integrates product thinking with delivery. Customer-centric design, tech decision-making, roadmap-driven agile execution.', color: AMBER, x: 710 },
+    { label: 'LEVEL 03', title: 'Product-Led\nBusiness Org', desc: 'Full ownership of vision, strategy, and culture. Continuous user research, performance metrics, long-term product leadership.', color: TEAL, x: 1330 },
+  ];
+  const cW = 500, cH = 440;
+
+  levels.forEach((lv, i) => {
+    const f = fu(t, 0.35 + i * 0.18, 0.5);
+    enter(f.a, f.dy, () => {
+      fillRect(lv.x, 268, cW, cH, NAVY);
+      fillRect(lv.x, 268, cW, 6, lv.color);
+      eyebrow(lv.label, lv.x + 26, 292, lv.color);
+      const tlines = lv.title.split('\n');
+      setFont(38, 700); ctx.fillStyle = WHITE;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      tlines.forEach((l, li) => ctx.fillText(l, lv.x + 26, 338 + li * 48));
+      fillRect(lv.x + 26, 448, cW - 52, 1, rgba(WHITE, 0.12));
+      fillWrapped(lv.desc, lv.x + 26, 466, cW - 52, 28, LIGHT, 19, 400);
+      // Arrow connector
+      if (i < 2) {
+        const ap = ease(prog(t, 0.6 + i * 0.18, 1.0 + i * 0.18));
+        fillRect(lv.x + cW + 4, 476, 100 * ap, 3, rgba(lv.color, 0.4));
+      }
+    });
+  });
+
+  logo(false);
+  navDots(7, SCENES.length, false);
+}
+
+// ── Scene 8 — Pillar 1: Agency ────────────────────────────────────────
+function scPillar1(t) {
+  fillRect(0, 0, W, H, OFF);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('PILLAR 01 — AGENCY', 100, 80, RUST));
+
+  // Ghost number background
+  ctx.save(); ctx.globalAlpha = 0.06;
+  setFont(380, 700); ctx.fillStyle = TEAL;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  ctx.fillText('1', W - 60, H / 2 - 320);
+  ctx.restore();
+
+  const f1 = fu(t, 0.3, 0.5);
+  enter(f1.a, f1.dy, () => {
+    setFont(60, 700); ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Empower product managers', 100, 160);
+  });
+  const f2 = fu(t, 0.5, 0.5);
+  enter(f2.a, f2.dy, () => {
+    setFont(60, 700); ctx.fillStyle = TEAL;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('with agency.', 100, 236);
+  });
+  const f3 = fu(t, 0.7, 0.5);
+  enter(f3.a, f3.dy, () => {
+    setFont(24, 400); ctx.fillStyle = GRAY;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('The authority and capacity to act on behalf of the organization—with its consent.', 100, 328);
+    fillRect(100, 374, 1200, 1, rgba(GRAY, 0.15));
+  });
+
+  const fc = fu(t, 0.9, 0.5);
+  enter(fc.a, fc.dy, () => {
+    eyebrow('PRODUCT EMPOWERMENT CASCADE', 100, 406, RUST);
+    const cascade = [
+      { label: 'Firm / CPO', note: 'Sets strategic direction via OKRs', bg: NAVY, w: 700 },
+      { label: 'Product Leads', note: 'Translate strategy into product priorities', bg: '#1A3558', w: 580 },
+      { label: 'Product Owners', note: 'Execute and own delivery outcomes', bg: '#243E62', w: 460 },
+    ];
+    cascade.forEach((c, i) => {
+      const cy = 436 + i * 68;
+      fillRect(100, cy, c.w, 50, c.bg);
+      fillRect(100, cy, 4, 50, TEAL);
+      setFont(19, 600); ctx.fillStyle = WHITE;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(c.label, 120, cy + 25);
+      setFont(16, 400); ctx.fillStyle = rgba(LIGHT, 0.7);
+      ctx.fillText(c.note, 290, cy + 25);
+    });
+  });
+
+  logo(false);
+  navDots(8, SCENES.length, false);
+}
+
+// ── Scene 9 — Pillar 2: Discovery ────────────────────────────────────
+function scPillar2(t) {
+  fillRect(0, 0, W, H, OFF);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('PILLAR 02 — CONTINUOUS DISCOVERY', 100, 80, RUST));
+
+  ctx.save(); ctx.globalAlpha = 0.06;
+  setFont(380, 700); ctx.fillStyle = TEAL;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  ctx.fillText('2', W - 60, H / 2 - 320);
+  ctx.restore();
+
+  const f1 = fu(t, 0.3, 0.5);
+  enter(f1.a, f1.dy, () => {
+    setFont(60, 700); ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Build habits that capture', 100, 160);
+  });
+  const f2 = fu(t, 0.5, 0.5);
+  enter(f2.a, f2.dy, () => {
+    setFont(60, 700); ctx.fillStyle = TEAL;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('customer knowledge.', 100, 236);
+  });
+  const f3 = fu(t, 0.7, 0.5);
+  enter(f3.a, f3.dy, () => {
+    setFont(24, 400); ctx.fillStyle = GRAY;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Integrate customer insight directly into your roadmap through the Opportunity Solution Tree.', 100, 328);
+    fillRect(100, 374, 1200, 1, rgba(GRAY, 0.15));
+  });
+
+  const ft = fu(t, 0.9, 0.5);
+  enter(ft.a, ft.dy, () => {
+    eyebrow('OPPORTUNITY SOLUTION TREE', 100, 406, RUST);
+    const nodes = [
+      { label: 'Business Objective', x: 580, y: 450, w: 240, h: 46, bg: NAVY, tc: WHITE },
+      { label: 'Opportunity 1',    x: 390, y: 544, w: 200, h: 42, bg: GRAY, tc: WHITE },
+      { label: 'Opportunity 2',    x: 630, y: 544, w: 200, h: 42, bg: GRAY, tc: WHITE },
+      { label: 'Solution A',       x: 310, y: 636, w: 170, h: 38, bg: RUST, tc: WHITE },
+      { label: 'Solution B',       x: 510, y: 636, w: 170, h: 38, bg: RUST, tc: WHITE },
+      { label: 'Experiment',       x: 310, y: 724, w: 170, h: 38, bg: TEAL, tc: INK  },
+    ];
+    // Connector lines
+    ctx.save(); ctx.strokeStyle = rgba(GRAY, 0.3); ctx.lineWidth = 2;
+    [[700, 496, 490, 544], [700, 496, 730, 544],
+     [490, 586, 395, 636], [490, 586, 595, 636],
+     [395, 674, 395, 724]].forEach(([x1,y1,x2,y2]) => {
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    });
+    ctx.restore();
+    // Nodes
+    nodes.forEach(n => {
+      fillRect(n.x, n.y, n.w, n.h, n.bg);
+      setFont(15, 600); ctx.fillStyle = n.tc;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(n.label, n.x + n.w / 2, n.y + n.h / 2);
+    });
+  });
+
+  logo(false);
+  navDots(9, SCENES.length, false);
+}
+
+// ── Scene 10 — Pillar 3: Measurement ─────────────────────────────────
+function scPillar3(t) {
+  fillRect(0, 0, W, H, OFF);
+
+  const fe = fu(t, 0.1, 0.4);
+  enter(fe.a, fe.dy, () => eyebrow('PILLAR 03 — MEASUREMENT', 100, 80, RUST));
+
+  ctx.save(); ctx.globalAlpha = 0.06;
+  setFont(380, 700); ctx.fillStyle = TEAL;
+  ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+  ctx.fillText('3', W - 60, H / 2 - 320);
+  ctx.restore();
+
+  const f1 = fu(t, 0.3, 0.5);
+  enter(f1.a, f1.dy, () => {
+    setFont(60, 700); ctx.fillStyle = INK;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Monitor and measure success', 100, 160);
+  });
+  const f2 = fu(t, 0.5, 0.5);
+  enter(f2.a, f2.dy, () => {
+    setFont(60, 700); ctx.fillStyle = TEAL;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('over time.', 100, 236);
+  });
+  const f3 = fu(t, 0.7, 0.5);
+  enter(f3.a, f3.dy, () => {
+    setFont(24, 400); ctx.fillStyle = GRAY;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Ensure alignment between strategic goals and cross-functional execution.', 100, 328);
+    fillRect(100, 374, 1200, 1, rgba(GRAY, 0.15));
+  });
+
+  const fh = fu(t, 0.9, 0.5);
+  enter(fh.a, fh.dy, () => {
+    eyebrow('THE MEASUREMENT HIERARCHY', 100, 406, RUST);
+    const tiers = [
+      { label: 'Business Objectives (Os)', sub: 'Set by executive direction / strategy', indent: 0, w: 780, bg: NAVY },
+      { label: 'Product Portfolios & Teams', sub: 'Translated into team missions', indent: 32, w: 660, bg: '#1A3558' },
+      { label: 'Product Initiatives & Roadmap', sub: 'Key Results guiding delivery', indent: 64, w: 540, bg: '#243E62' },
+      { label: 'Epics & KPIs', sub: 'Sprint-level execution & measurement', indent: 96, w: 420, bg: RUST },
+    ];
+    tiers.forEach((tier, i) => {
+      const ty = 440 + i * 68;
+      fillRect(100 + tier.indent, ty, tier.w, 50, tier.bg);
+      fillRect(100 + tier.indent, ty, 4, 50, TEAL);
+      setFont(19, 600); ctx.fillStyle = WHITE;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(tier.label, 118 + tier.indent, ty + 25);
+      setFont(15, 400); ctx.fillStyle = rgba(LIGHT, 0.65);
+      ctx.fillText(tier.sub, 340 + tier.indent, ty + 25);
+    });
+  });
+
+  logo(false);
+  navDots(10, SCENES.length, false);
+}
+
+// ── Scene 11 — Thank You ──────────────────────────────────────────────
+function scThanks(t) {
+  fillRect(0, 0, W, H, NAVY);
+
+  // Animated teal ring
+  const rp = ease(prog(t, 0.1, 0.8));
+  ctx.save();
+  ctx.globalAlpha = rp;
+  ctx.beginPath();
+  ctx.arc(W / 2, H / 2 - 100, 110 * rp, 0, Math.PI * 2);
+  ctx.strokeStyle = TEAL; ctx.lineWidth = 5; ctx.stroke();
+  ctx.restore();
+
+  const f1 = fu(t, 0.55, 0.55);
+  enter(f1.a, f1.dy, () => {
+    setFont(88, 700); ctx.fillStyle = WHITE;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('Thank you.', W / 2, H / 2 + 44);
+  });
+
+  const f2 = fu(t, 0.95, 0.5);
+  enter(f2.a, f2.dy, () => {
+    setFont(22, 400); ctx.fillStyle = rgba(LIGHT, 0.6);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('blend360.com', W / 2, H / 2 + 158);
+  });
+
+  logo(true);
+  navDots(11, SCENES.length, true);
+}
+
+// ── Scene registry ────────────────────────────────────────────────────
+const SCENES = [
+  scCover, scQualifiers, scTraps, scChallenge, scSolution,
+  scSystems, scPrinciples, scMaturity, scPillar1, scPillar2,
+  scPillar3, scThanks
+];
+
+// ── State & loop ──────────────────────────────────────────────────────
+let scene = 0, sceneT = 0, lastMs = 0;
+
+function goTo(idx) {
+  scene  = Math.max(0, Math.min(SCENES.length - 1, idx));
+  sceneT = 0;
+}
+
+function loop(ms) {
+  const dt = Math.min((ms - lastMs) / 1000, 0.1);
+  lastMs  = ms;
+  sceneT += dt;
+  SCENES[scene](sceneT);
+  requestAnimationFrame(loop);
+}
+
+// ── Input ─────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (['ArrowRight', ' ', 'Enter'].includes(e.key)) { e.preventDefault(); goTo(scene + 1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); goTo(scene - 1); }
+  else if (e.key.toLowerCase() === 'f') {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  }
+  else if (e.key.toLowerCase() === 'r') goTo(0);
+});
+
+let tx = 0;
+document.addEventListener('touchstart', e => { tx = e.touches[0].clientX; }, { passive: true });
+document.addEventListener('touchend', e => {
+  const dx = e.changedTouches[0].clientX - tx;
+  if (Math.abs(dx) > 50) goTo(scene + (dx < 0 ? 1 : -1));
+}, { passive: true });
+
+// Click right half = next, left half = prev
+cv.addEventListener('click', e => {
+  const rect = cv.getBoundingClientRect();
+  goTo(scene + (e.clientX - rect.left > rect.width / 2 ? 1 : -1));
+});
+
+// ── Start (wait for fonts) ────────────────────────────────────────────
+document.fonts.ready.then(() => {
+  requestAnimationFrame(ms => { lastMs = ms; requestAnimationFrame(loop); });
+});
+</script>
+</body>
+</html>
